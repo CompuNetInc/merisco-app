@@ -4,9 +4,12 @@ import json
 import logging
 import argparse
 import re
+import asyncio
 
 import yaml
 from scrapli import Scrapli
+from scrapli import AsyncScrapli
+from scrapli.driver.core import AsyncIOSXEDriver
 from scrapli.helper import textfsm_parse
 
 from g_apis import meraki_api as meraki
@@ -27,6 +30,19 @@ def load_yaml(filename):
 def create_json_file(filename: str, data):
     with open(filename, 'a') as fout:
         fout.write(json.dumps(data, indent=4))
+
+
+def lulu_stuff():
+    
+    grab_org_id()
+    grab_list_of_networks(orgid)
+    await grab_list_of_devices_from_networks(orgid, network)
+    await grab_port_configs(serial)
+    await grab_port_statuses(serial, ports)
+
+    grab_cisco_ports_statuses()
+    
+    output_stuff()
 
 
 def meraki_stuff(api_key: str, orgid: str, serial: str):
@@ -94,6 +110,24 @@ def scrapli_stuff(MY_DEVICE: dict):
         create_json_file("ntctextfsm.json", test3.textfsm_parse_output())
 
 
+async def async_scrapli_stuff(device: dict):
+    try:
+        conn = AsyncIOSXEDriver(**device)
+        await conn.open()
+        prompt = await conn.get_prompt()
+        version = await conn.send_command("show version")
+        await conn.close()
+        
+        return (prompt, version)
+
+    except Exception as e:
+        print(e)
+        # if "No matching cipher" in repr(e):
+        #     cipher = re.search(r'(?<=their offer: )(.+?)(?=,)', repr(e)).group(1)
+        #     logging.warning(f"Retrying connection to {host} with new cipher: {cipher}")
+        #     MY_DEVICE["transport_options"] = {"open_cmd": ["-c", cipher]}
+
+
 def cisco_connect(host: str):
     MY_DEVICE = {
         "host": host,
@@ -102,7 +136,7 @@ def cisco_connect(host: str):
         "auth_strict_key": False,
         "platform": "cisco_iosxe",
     }
-
+    print(MY_DEVICE)
     try:
         scrapli_stuff(MY_DEVICE)
     except Exception as e:
@@ -112,7 +146,6 @@ def cisco_connect(host: str):
             MY_DEVICE["transport_options"] = {"open_cmd": ["-c", cipher]}
             scrapli_stuff(MY_DEVICE)
 
-
 def cisco_stuff(username: str, password: str, filename: str):
 
     devices = load_yaml(filename)
@@ -120,6 +153,36 @@ def cisco_stuff(username: str, password: str, filename: str):
 
     for host in devices["IOS"]:
         cisco_connect(host)
+
+
+async def async_cisco_stuff(username: str, password: str, filename: str):
+
+    devices = load_yaml(filename)
+    print(devices)
+    MY_DEVICES = []
+    
+    # Build list of devices
+    for host in devices["IOS"]:
+        MY_DEVICES.append( {
+            "host": host,
+            "transport": "asyncssh",
+            "auth_username": username,
+            "auth_password": password,
+            "auth_strict_key": False,
+            #"platform": "cisco_iosxe",
+            "transport_options": {
+                "asyncssh": {
+                    "encryption_algs": ["aes128-cbc", "aes192-cbc", "aes256-ctr", "aes192-ctr"]
+                }
+            }
+        } )
+    
+    # Async run em all
+    coroutines = [async_scrapli_stuff(device) for device in MY_DEVICES]
+    results = await asyncio.gather(*coroutines)
+    
+    for result in results:
+        print(result[1].result)    #aka sh version
 
 
 if __name__ == "__main__":
@@ -149,8 +212,9 @@ if __name__ == "__main__":
 
 
     # Run program
-    cisco_stuff(username, password, filename)
-    meraki_stuff(api_key, args.organization, args.serial)
+    #cisco_stuff(username, password, filename)
+    asyncio.get_event_loop().run_until_complete(async_cisco_stuff(username, password, filename))
+    #meraki_stuff(api_key, args.organization, args.serial)
 
     # Done!
     print("\n\nComplete!\n")
